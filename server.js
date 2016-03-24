@@ -20,14 +20,15 @@
   
   // Set the minimum and maximum pixels x and y values for points
   var XMIN = 20,
-      XMAX = 1000,
+      XMAX = 480,
       YMIN = 20,
-      YMAX = 700;
+      YMAX = 480;
   
   // Include some node modules
   var express  = require('express'),
       app      = express.createServer(),
       io       = require('socket.io').listen(app),
+	  osc      = require("osc"),
       geometry = require('./lib/geometry.js');
 
   app.get("/", function(req, res) {
@@ -57,16 +58,79 @@
 
   // Add a point and two lines to a random existing line to create added complexity and keep the puzzle solvable
   function grow () {
-    var randomLine = theLines[Math.floor((Math.random()*theLines.length))],
-        newPoint = {id: thePoints.length, x: 0, y:0, held:false};
-    thePoints.push(newPoint);
-    theLines.push({point1: newPoint, point2: randomLine.point1});
-    theLines.push({point1: newPoint, point2: randomLine.point2});
-    do {
-      shufflePoints();
-    } while (!geometry.intersectionsFound(theLines));
+	var randomLine = theLines[Math.floor((Math.random()*theLines.length))],
+		newPoint = {id: thePoints.length, x: 0, y:0, held:false};
+	thePoints.push(newPoint);
+	theLines.push({point1: newPoint, point2: randomLine.point1});
+	theLines.push({point1: newPoint, point2: randomLine.point2});
+	do {
+	  shufflePoints();
+	} while (!geometry.intersectionsFound(theLines));
   }
-  
+
+  var getIPAddresses = function () {
+	var os = require("os"),
+		interfaces = os.networkInterfaces(),
+		ipAddresses = [];
+
+	for (var deviceName in interfaces) {
+		var addresses = interfaces[deviceName];
+		for (var i = 0; i < addresses.length; i++) {
+			var addressInfo = addresses[i];
+			if (addressInfo.family === "IPv4" && !addressInfo.internal) {
+				ipAddresses.push(addressInfo.address);
+			}
+		}
+	}
+
+	return ipAddresses;
+  };
+
+  var udpPort = new osc.UDPPort({
+	localAddress: "0.0.0.0",
+	localPort: 12000
+  });
+
+  udpPort.on("ready", function () {
+	var ipAddresses = getIPAddresses();
+
+	console.log("Listening for OSC over UDP.");
+	ipAddresses.forEach(function (address) {
+		console.log(" Host:", address + ", Port:", udpPort.options.localPort);
+	});
+  });
+
+  udpPort.on("message", function (oscMessage) {
+	var address = oscMessage.address;
+	var values = oscMessage.args;
+
+	switch(address) {
+	  case "/TSPS/personEntered/":
+		var data = {id: values[0], x: values[3], y: values[4]};
+		io.sockets.emit('personEntered', data);
+		break;
+	  case "/TSPS/personUpdated/":
+		var data = {id: values[0], x: values[3], y: values[4]};
+		io.sockets.emit('personUpdated', data);
+		if (!geometry.intersectionsFound(theLines)) {
+          grow();
+          io.sockets.emit('solved', { newPoints: thePoints, newLines: theLines });
+		}
+		break;
+	  case "/TSPS/personWillLeave/":
+		var data = {id: values[0], x: values[3], y: values[4]};
+		io.sockets.emit('personLeft', data);
+		break;
+	}
+
+  });
+
+  udpPort.on("error", function (err) {
+	console.log(err);
+  });
+
+  udpPort.open();
+
   // This makes socket.io work on Heroku
   io.configure(function () { 
     io.set('transports', ['xhr-polling']); 

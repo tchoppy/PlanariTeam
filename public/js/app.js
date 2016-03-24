@@ -28,6 +28,19 @@ Untangle = Ember.Application.create({
             Untangle.pointsController.drawAll();
         });
 
+		Untangle.socket.on('personEntered', function (data) {
+			Untangle.personsController.create(data.id, data.x*500, data.y*500);
+            Untangle.personsController.drawAll();
+        });
+
+		Untangle.socket.on('personUpdated', function (data) {
+			Untangle.personsController.personMoved(data.id, data.x*500, data.y*500);
+        });
+
+		Untangle.socket.on('personLeft', function (data) {
+			Untangle.personsController.personLeft(data.id);
+        });
+
         Untangle.socket.on('held', function (data) {
             Untangle.pointsController.pointHeld(data.point_id);
         });
@@ -41,6 +54,7 @@ Untangle = Ember.Application.create({
         });
         
         Untangle.socket.on('solved', function (data) {
+			console.log('solved!');
             Untangle.pointsController.loadPoints(data.newPoints);
             Untangle.linesController.loadLines(data.newLines);
             Untangle.linesController.drawAll();
@@ -117,6 +131,44 @@ Untangle.Point = Ember.Object.extend({
     */
     wasReleased: function () {
         this.held = false;
+    }
+});
+
+Untangle.Person = Ember.Object.extend({
+    id: null,
+    x: null,
+    y: null,
+    held: false,
+	held_id: 0,
+
+    /**
+    * This point was held by a client, which may be this one.
+    */
+    hasHold: function (point_id) {
+        this.held = true;
+		this.held_id = point_id;
+    },
+
+
+    /**
+    * This point was moved by a client, which may be this one.
+    * @param {Number} x the x coordinate to move the point to
+    * @param {Number} y the y coordinate to move the point to
+    */
+    wasMoved: function (x, y) {
+        this.x = x;
+        this.y = y;
+    },
+
+    
+    /**
+    * This point was released by a client, which may be this one.
+    */
+    hasLeftHold: function () {
+		if (this.held) {
+       		this.held = false;
+        	Untangle.pointsController.pointReleased(this.held_id);
+		}
     }
 });
 
@@ -226,6 +278,23 @@ Untangle.pointsController = Ember.ArrayProxy.create({
         }
         return null;
     },
+
+	/**
+    * Finds a point with the id point_id in the contents array if it exists and returns it.
+    * @param {Number} point_id the id of the desired point
+    * @return {Object} Returns the point with the id point_id or null if it does not exist there.
+    */
+    checkHold: function (x, y) {
+        var points = this.get('content');
+        for (var i = 0; i < points.length; i++) {
+            if (points[i].x > x-10 && points[i].x < x+10 && points[i].y > y-10 && points[i].y < y+10) {
+				Untangle.pointsController.pointHeld(points[i].id);
+                return points[i].id;
+            }
+        }
+        return -1;
+    },
+
     
     /**
     * Makes the necessary updates when a point is held
@@ -266,6 +335,124 @@ Untangle.pointsController = Ember.ArrayProxy.create({
           .attr('r', Untangle.POINT_RADIUS)
           .style('fill', Untangle.POINT_FILL_COLOR)
           .style('stroke', Untangle.POINT_STROKE_COLOR);
+    }
+});
+
+Untangle.personsController = Ember.ArrayProxy.create({
+    content: [],
+    
+    /**
+    * Creates a person object and adds it to the content array of this controller
+    * @param {Object} id the person's id
+    * @param {Object} x the peson's x coordinate
+    * @param {Object} y the person's y coordinate
+    * @return {Object} Returns the person that was created.
+    */
+    create: function (id, x, y) {
+        var person = Untangle.Person.create({
+            id: id,
+            x: x,
+            y: y
+        });
+        this.pushObject(person);
+        return person;
+    },
+    
+    /**
+    * Loads an array of persons into Ember by creating person objects and adding them to the content array of this controller
+    * @param {Object} persons an array of persons, each of which has an id, an x coordinate, and a y coordinate.
+    */
+    loadPersons: function (persons) {
+        this.set('content', []);
+        var person;
+        for (var i = 0; i < persons.length; i++) {
+            persons = persons[i];
+            this.create(person.id, person.x, person.y);
+        }
+    },
+
+    /**
+    * Erases any persons that are already drawn and then draws all the persons contained in the content array with d3 calls
+    */
+    drawAll: function () {
+        d3.selectAll('rect').remove();
+      
+        d3.select('svg')
+          .selectAll('rect')
+          .data(this.get('content'))
+          .enter()
+          .append('rect')
+          .attr('id', function (d) { return d.id; })
+          .attr('x', function (d) { return d.x; })
+          .attr('y', function (d) { return d.y; })
+          .attr('width', function (d) { return (d.held ? Untangle.HELD_POINT_RADIUS : Untangle.POINT_RADIUS); })
+          .attr('height', function (d) { return (d.held ? Untangle.HELD_POINT_RADIUS : Untangle.POINT_RADIUS); })
+          .style('fill', function (d) { return (d.held ? Untangle.HELD_POINT_FILL_COLOR : Untangle.POINT_FILL_COLOR); })
+          .style('stroke', function (d) { return (d.held ? Untangle.HELD_POINT_STROKE_COLOR : Untangle.POINT_STROKE_COLOR); })
+          .style('stroke-width', Untangle.POINT_STROKE_WIDTH);
+    },
+
+    /**
+    * Finds a person with the id person_id in the contents array if it exists and returns it.
+    * @param {Number} person_id the id of the desired person
+    * @return {Object} Returns the person with the id person_id or null if it does not exist there.
+    */
+    find: function (person_id) {
+        var persons = this.get('content');
+        for (var i = 0; i < persons.length; i++) {
+            if (persons[i].id === person_id) {
+                return persons[i];
+            }
+        }
+        return null;
+    },
+    
+    /**
+    * Makes the necessary updates when a point is held
+    * @param {Number} person_id the id of the person
+    * @param {Number} point_id the id of the point held
+    */
+    personHeld: function (point_id) {
+        var point = Untangle.pointsController.find(point_id);
+        point.wasHeld();
+        d3.select('rect[id="' + point.id + '"]')
+          .attr('r', Untangle.HELD_POINT_RADIUS)
+          .style('fill', Untangle.HELD_POINT_FILL_COLOR)
+          .style('stroke', Untangle.HELD_POINT_STROKE_COLOR);
+    },
+
+    /**
+    * Makes the necessary updates when a person is moved
+    * @param {Number} person_id the id of the person
+    */
+    personMoved: function (person_id, x, y) {
+        var person = Untangle.personsController.find(person_id);
+		if (Ember.none(person)) {
+			person = Untangle.personsController.create(person_id, x, y);
+		}
+        person.wasMoved(x, y);
+		if (person.held) {
+			point_id = Untangle.pointsController.pointMoved(person.held_id, x, y);
+		} else {
+			var hold_id = Untangle.pointsController.checkHold(x,y);
+			if (hold_id > 0) {
+				person.hasHold(hold_id);
+			}
+		}
+        d3.select('rect[id="' + person.id + '"]')
+          .attr('x', x).attr('y', y);
+    },
+
+    /**
+    * Makes the necessary updates when a person has left
+    * @param {Number} person_id the id of the point
+    */
+    personLeft: function (person_id) {
+        var person = Untangle.personsController.find(person_id);
+		person.hasLeftHold();
+		this.removeObject(person);
+        d3.select('rect[id="' + person.id + '"]')
+          .remove();
     }
 });
 
