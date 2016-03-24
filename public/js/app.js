@@ -41,15 +41,7 @@ Untangle = Ember.Application.create({
 			Untangle.personsController.personLeft(data.id);
         });
 
-        Untangle.socket.on('held', function (data) {
-            Untangle.pointsController.pointHeld(data.point_id);
-        });
-
-        Untangle.socket.on('moved', function (data) {
-            Untangle.pointsController.pointMoved(data.point_id, data.x, data.y);
-        });
-
-        Untangle.socket.on('released', function (data) {
+		Untangle.socket.on('released', function (data) {
             Untangle.pointsController.pointReleased(data.point_id);
         });
         
@@ -74,38 +66,13 @@ Untangle.Point = Ember.Object.extend({
     held: false,
 
     /**
-    * This client holds this point
-    */
-    hold: function () {
-        Untangle.holding = this.id;
-        this.wasHeld();
-        Untangle.socket.emit('hold', {
-            point_id: this.id
-        });
-    },
-
-    /**
     * This point was held by a client, which may be this one.
     */
     wasHeld: function () {
         this.held = true;
     },
 
-    /**
-    * This client moves this point
-    * @param {Number} x the x coordinate to move the point to
-    * @param {Number} y the y coordinate to move the point to
-    */
-    move: function (x, y) {
-        this.wasMoved(x, y);
-        Untangle.socket.emit('move', {
-            point_id: this.id,
-            x: this.x,
-            y: this.y
-        });
-    },
-
-    /**
+	/**
     * This point was moved by a client, which may be this one.
     * @param {Number} x the x coordinate to move the point to
     * @param {Number} y the y coordinate to move the point to
@@ -234,34 +201,7 @@ Untangle.pointsController = Ember.ArrayProxy.create({
           .attr('r', function (d) { return (d.held ? Untangle.HELD_POINT_RADIUS : Untangle.POINT_RADIUS); })
           .style('fill', function (d) { return (d.held ? Untangle.HELD_POINT_FILL_COLOR : Untangle.POINT_FILL_COLOR); })
           .style('stroke', function (d) { return (d.held ? Untangle.HELD_POINT_STROKE_COLOR : Untangle.POINT_STROKE_COLOR); })
-          .style('stroke-width', Untangle.POINT_STROKE_WIDTH)
-          .call(d3.behavior.drag()
-            .on("dragstart", function (d, i) {
-              if (!d.held) {
-                d.hold();
-                d3.select(this)
-                  .attr('r', Untangle.HELD_POINT_RADIUS)
-                  .style("fill", Untangle.HELD_POINT_FILL_COLOR)
-                  .style('stroke', Untangle.HELD_POINT_STROKE_COLOR);
-              }
-            })
-            .on("drag", function (d, i) {
-              if (d.held && Untangle.holding === d.id) {
-                d.move(d.x + d3.event.dx, d.y + d3.event.dy);
-                d3.select(this).attr('cx', d.x);
-                d3.select(this).attr('cy', d.y);
-                Untangle.linesController.update();
-              }
-            })
-            .on("dragend", function (d, i) {
-              if (d.held && Untangle.holding === d.id) {
-                d.release();
-                d3.select(this)
-                  .attr('r', Untangle.POINT_RADIUS)
-                  .style("fill", Untangle.POINT_FILL_COLOR)
-                  .style('stroke', Untangle.POINT_STROKE_COLOR);
-              }
-            }));
+          .style('stroke-width', Untangle.POINT_STROKE_WIDTH);
     },
 
     /**
@@ -280,9 +220,10 @@ Untangle.pointsController = Ember.ArrayProxy.create({
     },
 
 	/**
-    * Finds a point with the id point_id in the contents array if it exists and returns it.
-    * @param {Number} point_id the id of the desired point
-    * @return {Object} Returns the point with the id point_id or null if it does not exist there.
+    * Finds a point close to x and y in the contents array if it exists and returns it.
+    * @param {Number} x the x coordinate
+    * @param {Number} y the y coordinate
+    * @return {Object} Returns the id of the point close to (x,y) or -1 if it does not exist there.
     */
     checkHold: function (x, y) {
         var points = this.get('content');
