@@ -73,6 +73,14 @@
       shufflePoints();
     } while (!geometry.intersectionsFound(theLines));
   }
+  
+  // Deletes all holds. This is called before going to the next level.
+  function deleteHolds () {
+    for (var i in thePlayers) {
+      thePlayers[i].hold = null;
+    }
+    holds = {};
+  }
 
   // TSPS communication via OSC protocol
   var getIPAddresses = function () {
@@ -117,17 +125,19 @@
         var data = {id: values[0], x: values[3], y: values[4]};
         // check if a player became visible again
         var player, leavePos, enterPos;
-        for (var i = 0; i < thePlayers.length; i++) {
+        for (var i in thePlayers) {
           player = thePlayers[i];
-          leavePos = {x: player.person.x, y: player.person.y};
-          enterPos = {x: data.x, y: data.y};
-          if (!player.visible &&
-            Math.sqrt((enterPos.x-leavePos.x)*(enterPos.x-leavePos.x) +
-                (enterPos.y-leavePos.y)*(enterPos.y-leavePos.y)) < 50) {
-          player.visible = true;
-          player.person = data;
-          socket.broadcast.emit('playerVisible', {player_id: player.id, person_id: data.id, x: data.x, y: data.y});
-          return;
+          if (player.person !== null) {
+            leavePos = {x: player.person.x, y: player.person.y};
+            enterPos = {x: data.x, y: data.y};
+            if (!player.visible &&
+                Math.sqrt((enterPos.x-leavePos.x)*(enterPos.x-leavePos.x) +
+                    (enterPos.y-leavePos.y)*(enterPos.y-leavePos.y)) < 0.1) {
+                player.visible = true;
+                player.person = data;
+                io.sockets.emit('playerVisible', {player_id: player.id, person_id: data.id, x: data.x, y: data.y});
+                return;
+            }
           }
         }
         // this is an unidentified person object
@@ -141,14 +151,27 @@
         for (var i in thePlayers) {
           player = thePlayers[i];
           if (player.person !== null && player.person.id === data.id) {
+            // this TSPS person is identified as a player 
+            // => broadcast new player position + update thePlayers
             io.sockets.emit('playerUpdated', {id: player.id, x: data.x, y: data.y});
+            thePlayers[player.id].person.x = data.x;
+            thePlayers[player.id].person.y = data.y;
+            // check if the puzzle is solved after this movement
             if (player.hold && !geometry.intersectionsFound(theLines)) {
               grow();
-              io.sockets.emit('solved', { newPoints: thePoints, newLines: theLines });
+              deleteHolds();
+              setTimeout(function () {
+                io.sockets.emit('solved', { 
+                    newPoints: thePoints, 
+                    newLines: theLines, 
+                    newPlayers: thePlayers 
+                });
+              }, 5000); // wait 5 seconds before going to the next level
             }
             return;
           }
         }
+        // this TSPS person doesn't belong to a player
         io.sockets.emit('personUpdated', data);
         break;
         
@@ -156,9 +179,9 @@
         var data = {id: values[0], x: values[3], y: values[4]};
         // check if this person is identified with a player
         var player;
-        for (var i = 0; i < thePlayers.length; i++) {
+        for (var i in thePlayers) {
           player = thePlayers[i];
-          if (player.person.id === data.id) {
+          if (player.person !== null && player.person.id === data.id) {
             player.visible = false;
             player.person = data;
             io.sockets.emit('playerInvisible', { id: player.id, x: data.x, y: data.y });
@@ -198,7 +221,14 @@
       };
 
     // The client is first initialized with the current points and lines
-    socket.emit('init', { points: thePoints, lines: theLines, players: thePlayers, me: socket.id });
+    socket.emit('init', { 
+        points: thePoints, 
+        lines: theLines, 
+        players: thePlayers, 
+        me: socket.id 
+    });
+    
+    // When a new client connects, broadcast it to all other sockets
     socket.broadcast.emit('playerEntered', { players: thePlayers });
 
     // When a user identifies himself as a TSPS person object
@@ -208,24 +238,17 @@
       player.person = data.person;
       socket.broadcast.emit('personIdentified', { player_id: player.id, person_id: data.person.id });
     });
-    
-    // When a user unidentifies himself
-    socket.on('unidentify', function (data) {
-      var player = thePlayers[socket.id];
-      socket.broadcast.emit('personUnidentified', { player_id: player.id, person_id: player.person.id });
-      player.visible = false;
-      player.person = null;    
-    });
 
     // When a user holds a point, the hold is stored in holds, and is
     // broadcasted to all other sockets.
     socket.on('hold', function (data) {
-      holds[socket.id] = data.point_id;
+      holds[socket.id] = data.point;
       var curr;
       for (var i = 0; i < thePoints.length; i++) {
         curr = thePoints[i];
-        if (curr.id === data.point_id) {
+        if (curr.id === data.point.id) {
           curr.held = true;
+          thePlayers[socket.id].hold = curr;
           socket.broadcast.emit('pointHeld', { player_id: socket.id, point_id: curr.id });
           break;
         }
@@ -238,13 +261,29 @@
       var curr;
       for (var i = 0; i < thePoints.length; i++) {
         curr = thePoints[i];
-        if (curr.id === data.point_id) {
+        if (curr.id === data.point.id) {
           curr.held = false;
+          thePlayers[socket.id].hold = null;
           socket.broadcast.emit('pointReleased', { player_id: socket.id, point_id: curr.id });
           break;
         }
       }
       delete holds[socket.id];
+    });
+    
+    // When a user moves a point, the position is modified on the point object, 
+    // and is broadcasted to all other sockets.
+    socket.on('move', function (data) {
+      var curr;
+      for (var i = 0; i < thePoints.length; i++) {
+        curr = thePoints[i];
+        if (curr.id === data.point_id) {
+          curr.x = data.x;
+          curr.y = data.y;
+          //socket.broadcast.emit('pointMoved', { point_id: curr.id, x: curr.x, y: curr.y });
+          break;
+        }
+      }
     });
 
     // When a user disconnects, the server checks fot a hold and deletes it
@@ -253,12 +292,12 @@
     socket.on('disconnect', function () {
       var curr,
           held_point = holds[socket.id];
+      socket.broadcast.emit('playerLeft', { player_id: socket.id });
       if (held_point) {
         for (var i = 0; i < thePoints.length; i++) {
           curr = thePoints[i];
           if (curr.id === held_point) {
             curr.held = false;
-            socket.broadcast.emit('pointReleased', { player_id: socket.id, point_id: curr.id });
             break;
           }
         }

@@ -1,6 +1,6 @@
-/*
-*  App
-*/
+/************
+***  App  ***
+*************/
 Untangle = Ember.Application.create({
   POINT_RADIUS: 10,
   HELD_POINT_RADIUS: 15,
@@ -22,6 +22,15 @@ Untangle = Ember.Application.create({
 
   socket: io.connect(location.protocol + '//' + location.hostname),
 	me: null,
+  canHold: true,
+  waitHold: function() {
+    Untangle.canHold = false;
+    console.log('wait 5s before you can hold again');
+    setTimeout(function() { 
+      Untangle.canHold = true;     
+      console.log('you can hold again');
+    }, 5000);
+  },
 
   // This is called when Ember finishes loading. It is a sort of initialization.
   ready: function () {
@@ -46,10 +55,6 @@ Untangle = Ember.Application.create({
     Untangle.socket.on('personIdentified', function (data) {
 	    Untangle.personsController.personIdentified(data.player_id, data.person_id);
     });
-    
-    Untangle.socket.on('personUndentified', function (data) {
-	    Untangle.personsController.personUnidentified(data.player_id, data.person_id);
-    });
 
     Untangle.socket.on('playerEntered', function (data) {
       Untangle.playersController.loadPlayers(data.players);
@@ -60,15 +65,23 @@ Untangle = Ember.Application.create({
     });
     
     Untangle.socket.on('playerVisible', function (data) {
-      Untangle.playersController.playerVisible(data.player_id, data.person_id, data.x, data.y);
+      Untangle.playersController.playerVisible(data.player_id, data.person_id, data.x*500, data.y*500);
     });
     
     Untangle.socket.on('playerInvisible', function (data) {
-      Untangle.playersController.playerInvisible(data.id, data.x, data.y);
+      Untangle.playersController.playerInvisible(data.id, data.x*500, data.y*500);
+    });
+    
+    Untangle.socket.on('playerLeft', function (data) {
+      Untangle.playersController.playerLeft(data.player_id);
     });
 
     Untangle.socket.on('pointHeld', function (data) {
       Untangle.pointsController.pointHeld(data.player_id, data.point_id);
+    });
+    
+    Untangle.socket.on('pointMoved', function (data) {
+      Untangle.pointsController.pointMoved(data.point_id, data.x*500, data.y*500);
     });
     
 	  Untangle.socket.on('pointReleased', function (data) {
@@ -79,16 +92,18 @@ Untangle = Ember.Application.create({
 	    console.log('solved!');
       Untangle.pointsController.loadPoints(data.newPoints);
       Untangle.linesController.loadLines(data.newLines);
+      Untangle.playersController.loadPlayers(data.newPlayers);
+      Untangle.me.hold = null;
       Untangle.linesController.drawAll();
       Untangle.pointsController.drawAll();
+      Untangle.playersController.drawAll();
     });
   }
 });
 
-
-/*
-* Model
-*/
+/*************
+ *** Model ***
+ *************/
 
 // A point of the graph
 Untangle.Point = Ember.Object.extend({
@@ -96,12 +111,54 @@ Untangle.Point = Ember.Object.extend({
   x: null,
   y: null,
   held: false,
-
+  
+  /**
+  * This client holds this point
+  */
+  hold: function () {
+    this.wasHeld();
+    Untangle.socket.emit('hold', { 
+      point : this 
+    });
+  },
+  
   /**
   * This point was held by a client, which may be this one.
   */
   wasHeld: function () {
     this.held = true;
+  },
+   
+  /**
+  * This client releases this point
+  */  
+  release: function () {
+    this.wasReleased();
+    Untangle.waitHold();
+    Untangle.socket.emit('release', { 
+      point : this 
+    });
+  },
+
+  /**
+  * This point was released by a client, which may be this one.
+  */
+  wasReleased: function () {
+    this.held = false;
+  },
+    
+  /**
+  * This client moves this point
+  * @param {Number} x the x coordinate to move the point to
+  * @param {Number} y the y coordinate to move the point to
+  */
+  move: function (x, y) {
+    this.wasMoved(x, y);
+    Untangle.socket.emit('move', {
+        point_id: this.id,
+        x: this.x,
+        y: this.y
+    });
   },
 
   /**
@@ -112,13 +169,6 @@ Untangle.Point = Ember.Object.extend({
   wasMoved: function (x, y) {
     this.x = x;
     this.y = y;
-  },
-
-  /**
-  * This point was released by a client, which may be this one.
-  */
-  wasReleased: function () {
-    this.held = false;
   }
 });
 
@@ -130,7 +180,7 @@ Untangle.Person = Ember.Object.extend({
   identified: false,
 
   /**
-  * Identify this person as a player.
+  * This client identifies himself as this person.
   */
   identify: function () {
     this.wasIdentified();
@@ -138,32 +188,16 @@ Untangle.Person = Ember.Object.extend({
       person : this 
     });
   },
-  
-  /**
-  * Undentify this person as a player.
-  */
-  unidentify: function () {
-    this.wasUnidentified();
-    Untangle.socket.emit('unidentify', { 
-      person : this 
-    });
-  },
 
   /**
-  * This person was identified as a player.
-  * @param {Number} id the id of this player
-  * @param {String} color the color of this player
-  * @param {String} name the name of this player
+  * This person was identified as a player by a client, which may be this one.
   */
   wasIdentified: function () {
     this.identified = true;
   },
   
   /**
-  * This person was identified as a player.
-  * @param {Number} id the id of this player
-  * @param {String} color the color of this player
-  * @param {String} name the name of this player
+  * This person was unidentified as a player by a client, which may be this one.
   */
   wasUnidentified: function () {
     this.identified = false;
@@ -195,54 +229,67 @@ Untangle.Player = Ember.Object.extend({
   * @param {Number} y the y coordinate to move the player to
   */
   wasMoved: function (x, y) {
+    // update the players position (i.e. the position of the person object)
     Untangle.personsController.personMoved(this.person.id, x, y);
       
+    // check hold  
     if (this.hold !== null) {
-      Untangle.pointsController.pointMoved(this.hold.id, x, y)
+      // this player holds a point => update the position of this point
+      Untangle.pointsController.pointMoved(this.hold.id, x, y);
+      this.hold.move(x,y);
 		} else {
-			var point = Untangle.pointsController.checkHold(x,y);
-			if (point) {
-				this.hold = point;
-			}
+      // no current hold => check if this player gets a new hold
+      if (this.id === Untangle.me.id && Untangle.canHold ) {
+        var point_id = Untangle.pointsController.checkHold(x,y);
+        if (point_id > 0) {
+          // the player obtained a new hold
+          Untangle.pointsController.pointHeld(this.id, point_id);
+          var point = Untangle.pointsController.find(point_id);
+          Untangle.me.hold = point;
+          point.hold();
+        }
+      } 
 		}
   },
   
   /**
-  * This player became associated with a person.
+  * This player was associated with a person.
   */
   wasIdentified: function (person) {
     this.becameVisible(person);
-  },
-  
-  /**
-  * The association with a person was removed.
-  */
-  wasUnidentified: function () {
-    this.person = null;
-    this.becameInvisible();
+    if (this.hold !== null) {
+      Untangle.pointsController.pointReleased(this.id, this.hold.id);
+    }
   },
   
   /**
   * This player became visible.
   */
   becameVisible: function (person) {
-      this.visible = true;
-      this.person = person;
+    this.visible = true;
+    this.person = person;
   },
   
   /**
-  * This player became visible.
+  * This player became invisible.
   */
   becameInvisible: function () {
-      this.visible = false;
+    this.visible = false;
   },
   
+  /**
+   * This player got hold of a point.
+   * @param {Object} point the point this player holds
+   */
   gotHold: function (point) {
-      this.hold = point;
+    this.hold = point;
   },
   
+  /**
+   * This player lost hold of a point.
+   */
   lostHold: function () {
-      this.hold = null;
+    this.hold = null;
   }
 
 });
@@ -254,9 +301,9 @@ Untangle.Line = Ember.Object.extend({
 });
 
 
-/*
-  Controllers
-*/
+/********************
+***  Controllers  ***  
+*********************/
 Untangle.pointsController = Ember.ArrayProxy.create({
   content: [],
 
@@ -339,20 +386,21 @@ Untangle.pointsController = Ember.ArrayProxy.create({
     for (var i = 0; i < points.length; i++) {
       if (points[i].x > x-10 && points[i].x < x+10 
           && points[i].y > y-10 && points[i].y < y+10) {
-		    Untangle.pointsController.pointHeld(points[i].id);
-        return points[i];
+        return points[i].id;
       }
     }
-    return null;
+    return -1;
   },
 
   /**
   * Makes the necessary updates when a point is held
   * @param {Number} point_id the id of the point
   */
-  pointHeld: function (point_id) {
+  pointHeld: function (player_id, point_id) {
     var point = Untangle.pointsController.find(point_id);
     point.wasHeld();
+    var player = Untangle.playersController.find(player_id);
+    player.gotHold(point);
     d3.select('circle[id="' + point.id + '"]')
       .attr('r', Untangle.HELD_POINT_RADIUS)
       .style('fill', Untangle.HELD_POINT_FILL_COLOR)
@@ -378,9 +426,11 @@ Untangle.pointsController = Ember.ArrayProxy.create({
   * Makes the necessary updates when a point is released
   * @param {Number} point_id the id of the point
   */
-  pointReleased: function (point_id) {
+  pointReleased: function (player_id, point_id) {
     var point = Untangle.pointsController.find(point_id);
     point.wasReleased();
+    var player = Untangle.playersController.find(player_id);
+    player.lostHold();
     d3.select('circle[id="' + point.id + '"]')
       .attr('r', Untangle.POINT_RADIUS)
       .style('fill', Untangle.POINT_FILL_COLOR)
@@ -410,15 +460,16 @@ Untangle.personsController = Ember.ArrayProxy.create({
   },
 
   /**
-  * Erases any persons that are already drawn and then draws all the persons contained in the content array with d3 calls
+  * Erases any persons that are already drawn and then draws all the persons 
+  * contained in the content array with d3 calls.
+  * Only unidentified persons are drawn.
   */
   drawAll: function () {
-    d3.selectAll('.person').remove();
-
-    d3.select('svg')
-      .selectAll('.person')
-      .data(this.get('content'))
-      .enter()
+    var graph = d3.select('svg')
+                  .selectAll('.person')
+                  .data(this.get('content'));
+    
+    graph.enter()
       .append('rect')
       .filter(function (d) { return !d.identified; })
       .attr('id', function (d) { return d.id; })
@@ -438,6 +489,8 @@ Untangle.personsController = Ember.ArrayProxy.create({
           person.identify();
         }
       }); 
+      
+      graph.exit().remove();
   },
 
   /**
@@ -458,47 +511,56 @@ Untangle.personsController = Ember.ArrayProxy.create({
   /**
   * Makes the necessary updates when a person is moved
   * @param {Number} person_id the id of the person
+  * @param {Number} x the new x-coordinate
+  * @param {Number} y the new y-coordinate
   */
   personMoved: function (person_id, x, y) {
     var person = Untangle.personsController.find(person_id);
     if (person) {
+      // this person already exists => update position
       person.wasMoved(x, y);
       d3.select('rect[id="' + person.id + '"]')
         .attr('x', x).attr('y', y);
     } else {
+      // this person doesn't exist yet => create it
       person = this.create(person_id, x, y, false) 
       this.drawAll();     
     }
   },
   
   /**
-  * Makes the necessary updates when a person is moved
+  * Makes the necessary updates when a person is identified as a player.
+  * @param {Number} player_id the id of the player
   * @param {Number} person_id the id of the person
   */
   personIdentified: function (player_id, person_id) {
-    console.log(person_id);
-    var person = Untangle.personsController.find(person_id);
     var player = Untangle.playersController.find(player_id);
+    if (player.person !== null) {
+      // first, unidentify the person which is currently identified with this player
+      this.personUnidentified(player.person.id)
+    }
+    // second, identify this person
+    var person = Untangle.personsController.find(person_id);
+    person.wasIdentified();
     player.wasIdentified(person);
-		person.wasIdentified();
-    
+    // don't draw this person once identified
     d3.select('rect[id="' + person.id + '"]')
       .remove();
+    // instead draw the player
     Untangle.playersController.drawAll();
   },
   
   /**
-  * Makes the necessary updates when a person is moved
+  * Makes the necessary updates when a person is no longer linked to a player.
+  * @param {Number} player_id the id of the player
   * @param {Number} person_id the id of the person
   */
-  personUnidentified: function (player_id, person_id) {
+  personUnidentified: function (person_id) {
     var person = Untangle.personsController.find(person_id);
-    var player = Untangle.playersController.find(player_id);
-    player.wasUnidentified();
-    person.wasUnidentified();
-		
-    d3.select('rect[id="' + person.id + '"]')
-      .remove();
+    if (person) {
+      person.wasUnidentified();
+    }
+    this.drawAll();
   },
 
   /**
@@ -556,7 +618,8 @@ Untangle.playersController = Ember.ArrayProxy.create({
     },
 
     /**
-    * Erases any players that are already drawn and then draws all the players contained in the content array with d3 calls
+    * Erases any players that are already drawn and then draws all the players 
+    * contained in the content array with d3 calls
     */
     drawAll: function () {
         d3.selectAll('.player').remove();
@@ -577,9 +640,10 @@ Untangle.playersController = Ember.ArrayProxy.create({
           .style('stroke', function (d) { return d.color })
           .style('stroke-width', Untangle.PLAYER_STROKE_WIDTH)
           .on("click", function (d) {
-            if (d.id == Untangle.me.id) {
-              console.log("unidentified");
-              Untangle.personsController.personUnidentified(d.id, Untangle.me.person.id);
+            if (d.id == Untangle.me.id && Untangle.me.hold !== null) {
+              var point = Untangle.pointsController.find(d.hold.id);
+              d.hold.release();
+              Untangle.pointsController.pointReleased(d.id, point.id);
             }
           }); 
     },
@@ -621,8 +685,7 @@ Untangle.playersController = Ember.ArrayProxy.create({
         player.becameInvisible();
         d3.select('rect[id="' + player.id + '"]')
           .attr('x', x).attr('y', y)
-          .transition()
-          .style("opacity", 0.5);
+          .style("opacity", 0.3);
     },
     
     /**
@@ -634,7 +697,6 @@ Untangle.playersController = Ember.ArrayProxy.create({
         var person = Untangle.personsController.create(person_id, x, y, true);
         player.becameVisible(person);
         d3.select('rect[id="' + player.id + '"]')
-          .transition()
           .style("opacity", 1)
           .attr('x', x).attr('y', y);
     },
@@ -645,8 +707,14 @@ Untangle.playersController = Ember.ArrayProxy.create({
     */
     playerLeft: function (player_id) {
         var player = Untangle.playersController.find(player_id);
+        if (player.person !== null) {
+          Untangle.personsController.personUnidentified(player.person.id);
+        }
+        if (player.hold !== null) {
+          Untangle.pointsController.pointReleased(player.hold.id);
+        }
         this.removeObject(player);
-        d3.select('rect[id="' + point.id + '"]')
+        d3.select('rect[id="' + player.id + '"]')
           .transition()
           .remove()
     }
