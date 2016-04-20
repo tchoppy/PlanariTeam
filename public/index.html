@@ -1,14 +1,39 @@
 <!doctype html> 
 <html style="width:100%;height:100%;"> 
-  <head>
-		<title>untangle</title>
-		<script type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jquery/1.7.2/jquery.min.js"></script>
-		<script type="text/javascript" src="http://d3js.org/d3.v2.min.js"></script>
-		<script type="text/javascript" src="http://cloud.github.com/downloads/emberjs/ember.js/ember-0.9.8.1.min.js"></script>
+	<head>
 		<script src="/socket.io/socket.io.js"></script>
-		<script type="text/javascript" src="js/app.js"></script>
-  </head>
-  <body style='margin:0;overflow:hidden;background:#111;width:100%;height:100%;'>
-	  <svg width="100%" height="100%" viewBox="0 0 500 500" preserveAspectRatio="xMidYMid meet"></svg>
-  </body>
+		<script src="//ajax.googleapis.com/ajax/libs/jquery/2.1.1/jquery.min.js"></script>
+		<script>
+			var socket = io({ forceNew: true });
+			// Register an event when the connection is successfully etablished
+			socket.on('connect', function () {
+				;//$logDiv.prepend('<p>Connected to the Socket.IO server.</p>');
+			});
+			
+			// Do the login
+			function doLogin() {
+				var name = $('#name').val();
+				var color = $('#colors').val();
+				
+				$.post("/login", {name:name,color:color}, function(data)
+				{ 
+					// When login is done, we need to reconnect to the socket
+					// If we don't reconnect, the browser will not restart the handshake with the Socket.IO server
+					window.location.href = '/game';
+				});
+			}
+		</script>
+	</head>
+	<body>
+			<h1>TEST</h1>
+			<input type="text" name="name" id="name"/>
+			<select name="colors" id="colors">
+				<option disabled selected value> -- select an option -- </option>
+				<option value="red">Red</option>
+				<option value="green">Green</option>
+				<option value="blue">Blue</option>
+				<option value="yellow">Yellow</option>
+			</select>
+			<input type="button" value="Submit" id="submit" onclick="doLogin(); return false;">
+	</body>
 </html>

@@ -20,7 +20,7 @@ Untangle = Ember.Application.create({
   YMIN: 20,
   YMAX: 480,
 
-  socket: io.connect(location.protocol + '//' + location.hostname),
+  socket: io.connect(),
 	me: null,
   canHold: true,
   waitHold: function() {
